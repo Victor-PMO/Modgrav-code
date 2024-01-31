@@ -1,0 +1,201 @@
+def Modgrav(A, alpha, x_pos, p, rho, g, gamma, m, parm, ts, x1s, x2s, ht, hx1, hx2):
+  ''''
+  - A is a list of list of arrays of length len(ts) x len(x1s) x len(x2s). That is len(A[l]) = len(ts)len(x1s)len(x2s), for l = 0, 1, 2
+   x and p are lists of lists. This referes to their components as well as to the coordinate dependence of each one of those. A, x and p are the initial 3-vector,
+  initial position and initial momentum of each particle.
+  - j is the initial current density distribution
+  - rho is the initial matter distribution and should be  sympy function
+  - g is a metric tensor coming from the Einsteinpy module
+  - gamma is the term on the RHS of Eq.(1.1) above
+  - parm are the coordinate variables (sympy symbols) AND auxiliary parameters (such as our epsilon for the perturbed metric case). We shall make it a tuple
+  - ts, x1s, x2s are linspaces that represent the integration interval over each variable considered. h is the time-step
+
+  '''''
+  assert (type(A), type(x_pos), type(p)) == (list, list, list)
+  assert type(g) == MetricTensor
+  assert g.order + 1 == 3    # This will ensure the metric is 3 x 3, which lies in our case of interest
+  assert type(parm) == tuple
+
+  n1, n2 = len(x1s), len(x2s)
+
+  # Lets have the metric determinant be a sympy function
+  g_symp = sp.Matrix([[g[mu][nu] for nu in range(3)] for mu in range(3)])
+  det_g = lambdify([parm[0], parm[1], parm[2]], g_symp.det())
+
+  # makes it possible for us not to have to consider separate "boundary" cases. Since we're on a sphere we have a certain periodicity condition on the coordinates
+  x1s_old = x1s
+  x2s_old = x2s
+
+  x1s = np.insert(x1s, len(x1s), x1s[-2])
+  x1s = np.insert(x1s, len(x1s), x1s[1])
+
+
+  x2s[-1] = x2s[0]  # asserts that the last value equals the first
+  x2s = np.insert(x2s, len(x2s), x2s[1])
+
+  for mu in range(3):
+    A[mu][0] = np.insert(A[mu][0], A[mu][0].shape[0], A[mu][0][-2, :], axis = 0)
+    A[mu][0] = np.insert(A[mu][0], A[mu][0].shape[0], A[mu][0][1, :], axis = 0)
+
+    for j, _ in enumerate(x1s):
+        A[mu][0][j, n2-1] = A[mu][0][j, 0]
+
+    A[mu][0] = np.insert(A[mu][0], A[mu][0].shape[1], A[mu][0][:, 1], axis = 1)
+
+    alpha[mu][0] = np.insert(alpha[mu][0], alpha[mu][0].shape[0], alpha[mu][0][-2, :], axis = 0)
+    alpha[mu][0] = np.insert(alpha[mu][0], alpha[mu][0].shape[0], alpha[mu][0][1, :], axis = 0)
+
+    for j, _ in enumerate(x1s):
+      alpha[mu][0][j, n2-1] = alpha[mu][0][j, 0]
+
+    alpha[mu][0] = np.insert(alpha[mu][0], alpha[mu][0].shape[1], alpha[mu][0][:, -2], axis = 1)
+
+
+  # now we define some important quantities
+  Ch = ChristoffelSymbols.from_metric(g) # As it's defined, Gamma here isn't a function. To do so, we've got to "lambdify it" (a.k.a, make it into a valid numpy function) with respect to the variables at "parm"
+  Ric = RicciTensor.from_christoffels(Ch, parent_metric = g)
+  Ric_ul = Ric.change_config('ul')
+
+  Ch = np.array([[[lambdify([parm], Ch[k][i,j]) for j in range(3)] for i in range(3)] for k in range(3)])
+  ginv =  np.array([[lambdify([parm], g.inv()[i,j]) for i in range(3)] for j in range(3)])
+  g = np.array([[lambdify([parm], g[i,j]) for i in range(3)] for j in range(3)])
+  Ricul = np.array([[lambdify([parm], Ric_ul[i,j]) for i in range(3)] for j in range(3)])
+
+  # the current density vector
+  j_cur = [[gamma*p[mu][0]*np.array([[rho(ts[0], a, b) for a in x1s] for b in x2s])] for mu in range(3)] # Gotta put the gamma factor inside because the computer has a hard time with it for some reason
+
+  #z1, z2 = sp.symbols('z1, z2') # Don't worry about these now. we shall use them latter on in the code
+
+
+  for i, _ in enumerate(ts[:-1]):
+    ###### This first mu loop will be used to find A (the 3-vector) at the lattice points we've defined from the get go ######
+    # We'll also be interested in finding the interpolated values of F at each grid square (given that the particle can ocupy the "in between points" of our grids)
+    F_interp = [[ [] for beta1 in range(3)] for mu1 in range(3)]
+
+    numF = [[ np.zeros((len(x1s_old), len(x2s_old)))  for beta in range(3)] for mu in range(3)]
+
+    #Fhat_i = [[np.zeros((n1-1, n2-1))  for beta in range(3)] for mu in range(3)]
+
+    # Creates the time one step A and \partial_t A = \alpha. We're gonna append those to A and alpha later on
+    A_new = [np.zeros((len(x1s), len(x2s))), np.zeros((len(x1s), len(x2s))), np.zeros((len(x1s), len(x2s)))] # A^mu_{i+1, j, k}
+    alpha_new = [np.zeros((len(x1s), len(x2s))), np.zeros((len(x1s), len(x2s))), np.zeros((len(x1s), len(x2s)))] # alpha^mu_{i+1, j, k}
+
+
+    for mu in range(3):
+      # Let's construct the new time layer/grid ts[i+1] from the previously known one at time ts[i]
+      # We gotta find the A_{i+1, j, k} mesh first to then solve the sourced geodesic equation. This is what we do next!
+      for j, _ in enumerate(x1s_old):
+        for k, _ in enumerate(x2s_old[:-1]):
+          cur_eval = (ts[i], x1s[j], x2s[k])
+
+          # Solves the first part of the equation, giving the new time A vector
+          A_new[mu][j, k] = A[mu][i][j, k] + ht*alpha[mu][i][j, k]
+
+          # Now we want to solve the second equation
+          # The spacial Laplace operator
+          Del_sp_A =  [ginv[1, 1]((ts[i], x1s[j], x2s[k]))/(hx1**2)*(A[mu][i][j+1, k] - 2*A[mu][i][j, k] + A[mu][i][j-1, k]) +\
+               ginv[2, 2]((ts[i], x1s[j], x2s[k]))/(hx2**2)*(A[mu][i][j, k+1] - 2*A[mu][i][j, k] + A[mu][i][j, k-1]) +\
+               ginv[1, 2]((ts[i], x1s[j], x2s[k]))/(hx1*hx2)*(A[mu][i][j+1, k+1] - A[mu][i][j, k] - A[mu][i][j, k+1] + A[mu][i][j+1, k])
+               for mu in range(3)]
+
+          # Product of A with ginv and \partial\Gamma
+          Ag_delGamma = [sum([sum([A[sig][i][j, k]*ginv[beta, 0]((ts[i], x1s[j], x2s[k]))*(Ch[mu, sig, beta]((ts[i+1], x1s[j], x2s[k])) - Ch[mu, sig, beta]((ts[i], x1s[j], x2s[k])))/ht + \
+                 A[sig][i][j, k]*ginv[beta, 1]((ts[i], x1s[j], x2s[k]))*(Ch[mu, sig, beta]((ts[i], x1s[j+1], x2s[k])) - Ch[mu, sig, beta]((ts[i], x1s[j], x2s[k])))/hx1 + \
+                 A[sig][i][j, k]*ginv[beta, 2]((ts[i], x1s[j], x2s[k]))*(Ch[mu, sig, beta]((ts[i], x1s[j], x2s[k+1])) - Ch[mu, sig, beta]((ts[i], x1s[j], x2s[k])))/hx2 for beta in range(3)])
+                 for sig in range(3)]) for mu in range(3)]
+
+          # Products of \Gamma, g and \partial A
+          Gammag_delA = [2*sum([sum([Ch[mu, sig, beta]((ts[0], x1s[j], x2s[k]))*ginv[beta, 1]((ts[i], x1s[j], x2s[k]))*(A[sig][i][j+1, k] - A[sig][i][j, k])/hx1 + \
+                 Ch[mu, sig, beta]((ts[i], x1s[j], x2s[k]))*ginv[beta, 2]((ts[i], x1s[j], x2s[k]))*(A[sig][i][j, k+1] - A[sig][i][j, k])/hx2 for beta in range(3)])
+                 for sig in range(3)]) for mu in range(3)]
+
+          gGamma_delA = [sum([sum([Ch[1, sig, beta]((ts[i], x1s[j], x2s[k]))*ginv[sig, beta]((ts[i], x1s[j], x2s[k]))*(A[mu][i][j+1, k] - A[mu][i][j, k])/hx1 + \
+                 Ch[2, sig, beta]((ts[i], x1s[j], x2s[k]))*ginv[sig, beta]((ts[i], x1s[j], x2s[k]))*(A[mu][i][j, k+1] - A[mu][i][j, k])/hx2 for beta in range(3)])
+                 for sig in range(3)]) for mu in range(3)]
+
+          # Products of \Gamma, ginv and \alpha
+          Gammag_alpha = [sum([sum([Ch[mu, sig, beta]((ts[i], x1s[j], x2s[k]))*ginv[beta, 0]((ts[i], x1s[j], x2s[k]))*alpha[sig][i][j, k]\
+                            for beta in range(3)]) for sig in range(3)]) for mu in range(3)]
+
+          gGamma_alpha = [sum([sum([Ch[0, sig, beta]((ts[i], x1s[j], x2s[k]))*ginv[beta, sig]((ts[i], x1s[j], x2s[k]))*alpha[mu][i][j, k] \
+                 for beta in range(3)]) for sig in range(3)]) for mu in range(3)]
+
+          # Ric(upper, lower) times A
+          Ric_A = [sum([Ricul[mu][nu]((ts[i], x1s[j], x2s[k]))*A[nu][i][j, k] for nu in range(3)]) for mu in range(3)]
+
+          # Product of ginv, A, and 2 \Gammas
+          gA_Gamma2 = [sum([sum([sum([sum([ginv[beta][nu]((ts[i], x1s[j], x2s[k]))*A[sig][i][j, k]*(Ch[alp, sig, beta]((ts[i], x1s[j], x2s[k]))*Ch[mu, alp, nu]((ts[i], x1s[j], x2s[k])) - \
+                                                                          Ch[mu, sig, alp]((ts[i], x1s[j], x2s[k]))*Ch[alp, beta, nu]((ts[i], x1s[j], x2s[k]))) for beta in range(3)]) for sig in range(3)]) for alp in range(3)]) for nu in range(3)]) for mu in range(3)]
+
+          # Products of ginv with alpha
+          galpha = [2*ginv[1,0]((ts[i], x1s[j], x2s[k]))*(alpha[mu][i][j+1, k] - alpha[mu][i][j, k])/hx1 + 2*ginv[2,0]((ts[i], x1s[j], x2s[k]))*(alpha[mu][i][j, k+1] - alpha[mu][i][j, k])/hx2 for mu in range(3)]
+
+
+          # Solves the second part of the equation
+          alpha_new[mu][j, k] = alpha[mu][i][j, k] + ht*hx1*hx2/g[0,0]((ts[i], x1s[j], x2s[k]))*j_cur[mu][i][j, k] - ht*hx1*hx2/g[0,0]((ts[i], x1s[j], x2s[k]))*(Ric_A[mu] + gA_Gamma2[mu] + galpha[mu] + Del_sp_A[mu] + Ag_delGamma[mu] + Gammag_delA[mu] + gGamma_delA[mu] + Gammag_alpha[mu] + gGamma_alpha[mu])
+
+      alpha[mu].append(alpha_new[mu])
+      A[mu].append(A_new[mu])
+
+      ###### This finishes the first part of the code, i.e to find the next time setp 3-vector A values on our grid ######
+
+      # With the above we find the first step A^mu 3-vector. Now we use it to compute the first step evolution of the position of our particle(s)
+      # We start by finding our numF which shall be needed on the sourced geodesic equation
+      for beta in range(3):
+        for j, _ in enumerate(x1s_old):
+          for k, _ in enumerate(x2s_old[:-1]):
+            cur_eval = (ts[i], x1s[j], x2s[k])
+
+            numF[mu][beta][j, k] = ginv[0, beta](cur_eval)*(A_new[mu][j, k] - A[mu][i][j, k])/ht + ginv[1, beta](cur_eval)*(A[mu][i][j+1, k] - A[mu][i][j, k])/hx1 + ginv[2, beta](cur_eval)*(A[mu][i][j, k+1] - A[mu][i][j, k])/hx2 + sum([sum([A[sig][i][j, k]*Ch[mu, sig, alp](cur_eval)*ginv[alp, beta](cur_eval) for sig in range(3)]) for alp in range(3)])-\
+                   (ginv[0, mu](cur_eval)*(A_new[beta][j, k] - A[beta][i][j, k])/ht + ginv[1, mu](cur_eval)*(A[beta][i][j+1, k] - A[beta][i][j, k])/hx1 + ginv[2, mu](cur_eval)*(A[beta][i][j, k+1] - A[beta][i][j, k])/hx2 +  sum([sum([A[sig][i][j, k]*Ch[beta, sig, alp](cur_eval)*ginv[alp, mu](cur_eval) for sig in range(3)]) for alp in range(3)]))
+
+
+
+        z_arr = [[[] for beta1 in range(3)] for mu1 in range(3)]
+        points_list = [[x1s_old[0], x2s_old[0]]]
+
+        for _, x in enumerate(x1s_old[1:-1]):
+          for _, y in enumerate(x2s_old[:-1]): # we stop at the almost last point because this axis is periodic
+            points_list.append([x, y])
+
+        points_list.append([x1s_old[-1], x2s_old[-1]])
+
+        points_arr = np.array(points_list)
+
+        # Creates the grid to which our solutions shall be extended (a rebranding of x1s and x2s, actually!)
+        x1s_grid = np.array(points_arr[:, 0])
+        x2s_grid = np.array(points_arr[:, 1])
+
+        z_arr[mu][beta].append(numF[mu][beta][0, 0])
+        for a, _ in enumerate(x1s_old[1:-1]):
+          for b, _ in enumerate(x2s_old[:-1]):
+            z_arr[mu][beta].append(numF[mu][beta][a, b])   # points on which we want to evaluate the solution
+
+        z_arr[mu][beta].append(numF[mu][beta][-1, -1])
+
+        F_interp[mu][beta].append(LinearNDInterpolator(points =list(zip(x1s_grid, x2s_grid)), values = np.array(z_arr[mu][beta])))  # define the interpolating functions
+
+
+
+    ##### This ends our first mu for loop at time ts[i]. Let's now start with the 2nd one, which shall be used to compute the 1st time step for the sourced geodesic equation #####
+    if m == 0:
+      for mu1 in range(3):
+        xmu_new = x_pos[mu1][i] + p[mu1][i]*ht
+        pmu_new = p[mu1][i] - ht*sum([sum([Ch[mu1][alp][beta]((ts[i], x_pos[1][-1], x_pos[2][-1]))*p[alp][i]*p[beta][i] for alp in range(3)]) for beta in range(3)])
+
+        x_pos[mu1].append(xmu_new)
+        p[mu1].append(pmu_new)
+        j_cur[mu1].append(gamma*p[mu1][i+1]*np.array([[rho(ts[i+1], x1, x2) for x1 in x1s_old] for x2 in x2s_old]))
+
+    if m !=0:
+      for mu2 in range(3):
+        # Gives us x^mu_{i+1} and p^mu_{i+1}
+        xmu_new = x_pos[mu2][i] + p[mu2][i]*ht
+        pmu_new = p[mu2][i] + ht*abs(m)/m*(sum([sum([F_interp[mu2][beta][0](x_pos[1][-1], x_pos[2][-1])*p[alp][i]*g[alp, beta]((ts[i], x_pos[1][-1], x_pos[2][-1])) for alp in range(3)]) for beta in range(3)]) - sum([sum([Ch[mu2][alp][beta]((ts[i], x_pos[1][-1], x_pos[2][-1]))*p[alp][i]*p[beta][i] for alp in range(3)]) for beta in range(3)]))
+
+    # Last command of the ts for-loop. We append to the position and momentum list the values obtained after having numerically solved the field and sourced geodesic equations (above).
+        x_pos[mu2].append(xmu_new)
+        p[mu2].append(pmu_new)
+        j_cur[mu2].append(gamma*p[mu2][i+1]*np.array([[rho(ts[i+1], x1, x2) for x1 in x1s_old] for x2 in x2s_old]))
+
+  return x_pos, p, A, alpha
