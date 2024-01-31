@@ -31,7 +31,6 @@ def Modgrav(A, alpha, x_pos, p, rho, g, gamma, m, parm, ts, x1s, x2s, ht, hx1, h
 
 
   x2s[-1] = x2s[0]  # asserts that the last value equals the first
-  x2s = np.insert(x2s, len(x2s), x2s[1])
 
   for mu in range(3):
     A[mu][0] = np.insert(A[mu][0], A[mu][0].shape[0], A[mu][0][-2, :], axis = 0)
@@ -40,16 +39,11 @@ def Modgrav(A, alpha, x_pos, p, rho, g, gamma, m, parm, ts, x1s, x2s, ht, hx1, h
     for j, _ in enumerate(x1s):
         A[mu][0][j, n2-1] = A[mu][0][j, 0]
 
-    A[mu][0] = np.insert(A[mu][0], A[mu][0].shape[1], A[mu][0][:, 1], axis = 1)
-
     alpha[mu][0] = np.insert(alpha[mu][0], alpha[mu][0].shape[0], alpha[mu][0][-2, :], axis = 0)
     alpha[mu][0] = np.insert(alpha[mu][0], alpha[mu][0].shape[0], alpha[mu][0][1, :], axis = 0)
 
     for j, _ in enumerate(x1s):
       alpha[mu][0][j, n2-1] = alpha[mu][0][j, 0]
-
-    alpha[mu][0] = np.insert(alpha[mu][0], alpha[mu][0].shape[1], alpha[mu][0][:, -2], axis = 1)
-
 
   # now we define some important quantities
   Ch = ChristoffelSymbols.from_metric(g) # As it's defined, Gamma here isn't a function. To do so, we've got to "lambdify it" (a.k.a, make it into a valid numpy function) with respect to the variables at "parm"
