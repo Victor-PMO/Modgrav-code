@@ -1,0 +1,37 @@
+def Twopart_Modgrav(A, alpha, x0, p0, rho1, rho2, g, gamma, m1, m2, parm, ts, x1s, x2s, ht, hx1, hx2):
+  A1 = A[0]
+  A2 = A[1]
+
+  alpha1 = alpha[0]
+  alpha2 = alpha[1]
+
+  x1_pos = x0[0]
+  x2_pos = x0[1]
+
+  p1_mom = p0[0]
+  p2_mom = p0[1] 
+
+  for i, _ in enumerate(ts[:-1]):
+    x2_last = [[x2_pos[0][-1]], [x2_pos[1][-1]], [x2_pos[2][-1]]]
+    p2_last = [[p2_mom[0][-1]], [p2_mom[1][-1]], [p2_mom[2][-1]]]
+
+    # Finds the "next step" position and momentum of particle 1 given its previous such values together with particle's 2 previous such values as well
+    x1_new, p1_new, A1, alpha1 = Modgrav_markov(A2, alpha2, x1_last, p1_last, rho2, g, gamma, m1, parm, ts[i+1:i+2], x1s, x2s, ht, hx1, hx2)
+
+    # Appends to the full list the most recent update that happened to the positions/momenta lists
+    for mu in range(3):
+      x1_pos[mu].append(x1_new[mu][-1]) 
+      p1_mom[mu].append(p1_new[mu][-1])
+
+    x1_last = [[x1_pos[0][-1]], [x1_pos[1][-1]], [x1_pos[2][-1]]]
+    p1_last = [[p1_mom[0][-1]], [p1_mom[1][-1]], [p1_mom[2][-1]]]
+
+    # Same as the above but for particle 2 now
+    x2_new, p2_new, A2, alpha2 = Modgrav_markov(A1, alpha1, x2_last, p2_last, rho1, g, gamma, m2, parm, ts[i+1:i+2], x1s, x2s, ht, hx1, hx2)
+
+    # Appends to the full list the most recent update that happened to the positions/momenta lists
+    for nu in range(3):
+      x2_pos[nu].append(x2_new[nu][-1]) 
+      p2_mom[nu].append(p2_new[nu][-1])    
+
+  return x1_pos, x2_pos
