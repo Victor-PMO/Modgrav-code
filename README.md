@@ -2,9 +2,8 @@
 
 We want first to consider the effects of the *gravitational Faraday Tensor* $F_{\mu\nu}$ on the dynamics of $2$ semi-relativistic (as in, "no background backreaction producing") test particles. To do so we have to jointly solve the following set of equations
 
-$
-\delta F = -\gamma j,\hspace{20pt}(1.1)
-$
+$\delta F = -\gamma j,\hspace{20pt}(1.1)$
+
 $
 dF = 0,\hspace{31pt} (1.2)
 $
